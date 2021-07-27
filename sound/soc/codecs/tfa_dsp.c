@@ -249,7 +249,8 @@ void tfa_set_query_info(struct tfa_device *tfa)
 	tfa->partial_enable = 0;
 	tfa->convert_dsp32 = 0;
 	tfa->sync_iv_delay = 0;
-    tfa->dynamicTDMmode = -1; /**tracking dynamic TDM setting from alsa input stream*/
+	tfa->dynamicTDMmode = -1; /**tracking dynamic TDM setting from alsa input stream*/
+	tfa->rate = 0;
 	tfa->bitwidth = -1;/**bitwdith from alsa input stream*/
 
 	/* TODO use the getfeatures() for retrieving the features [artf103523]
@@ -956,49 +957,6 @@ static short twos(short x)
 {
 	return (x < 0) ? x + 512 : x;
 }
-
-/* huaqin add for 1246411 by xudayi at 2018/11/06 start */
-
-int tfa_set_format_flag = 0;
-void tfa98xx_set_format(struct tfa_device *tfa, int val)
-{
-	int value= -1;
-
-	value = tfa_is_cold(tfa);
-
-	pr_err("tfa98xx_set_format, value = %d\n",value);
-
-	if(TFA_GET_BF(tfa,PWDN)){
-		if(val == 1){
-
-			if (value ==1) {
-				tfa_set_format_flag = 1;
-			}else if(value ==0){
-				TFA_SET_BF(tfa, TDMNBCK1, 2);
-				TFA_SET_BF(tfa, TDMSLLN1, 31);
-/* Huaqin add for nxp 24bit playback update by zhengwu at 2018/12/13 start */
-				TFA_SET_BF(tfa, TDMSSIZE1, 31);
-/* Huaqin add for nxp 24bit playback update by zhengwu at 2018/12/13 end */
-			}
-			printk("tfa98xx_set_format to 24 bit\n");
-
-		}else if(val == 0){
-
-			if (value ==1) {
-				tfa_set_format_flag = 0;
-			}else if(value ==0){
-				TFA_SET_BF(tfa, TDMNBCK1, 0);
-				TFA_SET_BF(tfa, TDMSLLN1, 15);
-				TFA_SET_BF(tfa, TDMSSIZE1, 15);
-			}
-			printk("tfa98xx_set_format to 16 bit\n");
-
-		}
-	}else{
-		printk("tfa98xx_set_format could not set format\n");
-	}
-}
-/* huaqin add for 1246411 by xudayi at 2018/11/06 end */
 
 void tfa98xx_set_exttemp(struct tfa_device *tfa, short ext_temp)
 {
@@ -2742,8 +2700,13 @@ enum Tfa98xx_Error tfaGetFwApiVersion(struct tfa_device *tfa, unsigned char *pFi
 		}
 		pFirmwareVersion[0] = (buffer >> 16) & 0xff;
 		pFirmwareVersion[1] = (buffer >> 8) & 0xff;
-		pFirmwareVersion[2] = (buffer >> 6) & 0x03;
-		pFirmwareVersion[3] = (buffer)      & 0x3f;
+		if ((pFirmwareVersion[0] != 2) && (pFirmwareVersion[1] >= 33)) {
+			pFirmwareVersion[2] = (buffer >> 3) & 0x1F;
+			pFirmwareVersion[3] = (buffer) & 0x07;
+		} else {
+			pFirmwareVersion[2] = (buffer >> 6) & 0x03;
+			pFirmwareVersion[3] = (buffer) & 0x3f;
+		}
 	}
 	else
 	{
@@ -2770,9 +2733,13 @@ enum Tfa98xx_Error tfaGetFwApiVersion(struct tfa_device *tfa, unsigned char *pFi
 		/* Split 3rd byte into two seperate ITF version fields (3rd field and 4th field) */
 		pFirmwareVersion[0] = (buffer[0]);
 		pFirmwareVersion[1] = (buffer[1]);
-		pFirmwareVersion[3] = (buffer[2])      & 0x3f;
-		pFirmwareVersion[2] = (buffer[2] >> 6) & 0x03;
-		
+		if ((pFirmwareVersion[0] != 2) && (pFirmwareVersion[1] >= 33)) {
+			pFirmwareVersion[3] = (buffer[2]) & 0x07;
+			pFirmwareVersion[2] = (buffer[2] >> 3) & 0x1F;
+		} else {
+			pFirmwareVersion[3] = (buffer[2]) & 0x3f;
+			pFirmwareVersion[2] = (buffer[2] >> 6) & 0x03;
+		}
 	}
 
 	if (1 == tfa->cnt->ndev) {
@@ -3028,7 +2995,13 @@ enum Tfa98xx_Error tfaRunStartup(struct tfa_device *tfa, int profile)
 
 	/* Factory trimming for the Boost converter */
 	tfa98xx_factory_trimmer(tfa);
-
+#ifdef __KERNEL__
+#if 0
+	/* Control for PWM phase shift */
+	if (tfa->bitwidth == 24 && tfa->rate == 16)/*TFA9875-240*/
+		tfa98xx_set_phase_shift(tfa);
+#endif
+#endif
 	/* Go to the initCF state */
 	tfa_dev_set_state(tfa, TFA_STATE_INIT_CF, strstr(tfaContProfileName(tfa->cnt, tfa->dev_idx, profile), ".cal") != NULL);
 
@@ -3317,9 +3290,6 @@ error_exit:
 enum tfa_error tfa_dev_stop(struct tfa_device *tfa)
 {
 	enum Tfa98xx_Error err = Tfa98xx_Error_Ok;
-	/* huaqin add for 1246411 by xudayi at 2018/11/06 start */
-	int times = 0, ready;
-	/* huaqin add for 1246411 by xudayi at 2018/11/06 end */
 
 	/* mute */
 	tfaRunMute(tfa);
@@ -3334,24 +3304,6 @@ enum tfa_error tfa_dev_stop(struct tfa_device *tfa)
 
 	/* disable I2S output on TFA1 devices without TDM */
 	err = tfa98xx_aec_output(tfa, 0);
-
-	/* huaqin add for 1246411 by xudayi at 2018/11/06 start */
-	while ((TFA_GET_BF(tfa, MANSTATE) != 0) && (times++ < 20)) {
-		pr_info("tfa stop wait state machine goto powerdown mode.\n");
-		err = tfa98xx_dsp_system_stable(tfa, &ready);
-		if (err != Tfa98xx_Error_Ok || !ready) {
-			pr_err("tfa stop: No I2S CLK\n");
-			break;
-		}
-		msleep_interruptible(5);
-	}
-
-	if (times < 20) {
-		pr_err("tfa stop: already in PowerDown\n");
-	} else {
-		pr_err("tfa stop: Not in PowerDown\n");
-	}
-	/* huaqin add for 1246411 by xudayi at 2018/11/06 end */
 
 	return err;
 }

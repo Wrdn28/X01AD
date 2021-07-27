@@ -27,13 +27,8 @@ extern "C" {
 #endif
 
 /* Linux kernel module defines TFA98XX_GIT_VERSIONS in the linux_driver/Makefile */
-#if !defined(TFA98XX_GIT_VERSIONS)
-#endif
-#ifdef TFA98XX_GIT_VERSIONS
-  #define TFA98XX_API_REV_STR "v6.7.8"/*TFA98XX_GIT_VERSIONS*/
-#else
-  #define TFA98XX_API_REV_STR "v6.7.8"
-#endif
+  #define TFA98XX_API_REV_STR "v6.7.11"
+
 
 #include "tfa_device.h"
 
@@ -367,10 +362,6 @@ void tfa98xx_key2(struct tfa_device *tfa, int lock);
 int tfa_calibrate(struct tfa_device *tfa) ;
 void tfa98xx_set_exttemp(struct tfa_device *tfa, short ext_temp);
 short tfa98xx_get_exttemp(struct tfa_device *tfa);
-
-/* huaqin add for 1246411 by xudayi at 2018/11/06 start */
-void tfa98xx_set_format(struct tfa_device *tfa, int val);
-/* huaqin add for 1246411 by xudayi at 2018/11/06 end */
 
 /* control the volume of the DSP
  * @param vol volume in bit field. It must be between 0 and 255

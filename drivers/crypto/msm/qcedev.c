@@ -1922,7 +1922,7 @@ static inline long qcedev_ioctl(struct file *file,
 
 			if (map_buf.num_fds > QCEDEV_MAX_BUFFERS) {
 				err = -EINVAL;
-				goto exit_free_qcedev_areq;
+				return err;
 			}
 
 			for (i = 0; i < map_buf.num_fds; i++) {

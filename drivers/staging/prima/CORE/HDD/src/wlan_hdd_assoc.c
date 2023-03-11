@@ -1697,7 +1697,8 @@ static void hdd_check_and_move_if_sap_is_on_dfs_chan(hdd_context_t *hdd_ctx,
         }
 
         hddLog(LOG1, "Schedule workqueue to move the SAP to non DFS channel");
-        schedule_delayed_work(&hdd_ctx->ecsa_chan_change_work,
+        queue_delayed_work(system_freezable_power_efficient_wq,
+                            &hdd_ctx->ecsa_chan_change_work,
                             msecs_to_jiffies(ECSA_DFS_CHAN_CHANGE_DEFER_TIME));
     }
 }
@@ -2338,7 +2339,8 @@ hdd_schedule_ecsa_chan_change_work(hdd_context_t *hdd_ctx,
        time_diff = ECSA_SCC_CHAN_CHANGE_DEFER_INTERVAL - time_diff;
 
    hddLog(LOG1, FL("schedule ecsa_chan_change_work after %d ms"), time_diff);
-   schedule_delayed_work(&hdd_ctx->ecsa_chan_change_work,
+   queue_delayed_work(system_freezable_power_efficient_wq,
+                          &hdd_ctx->ecsa_chan_change_work,
                           msecs_to_jiffies(time_diff));
 }
 
@@ -2906,10 +2908,12 @@ static eHalStatus hdd_AssociationCompletionHandler( hdd_adapter_t *pAdapter, tCs
                 else
                 {
                     hdd_hostapd_stop(pHostapdAdapter->dev);
+#ifdef SAP_AUTH_OFFLOAD
                     if (pHddCtx->cfg_ini &&
                         pHddCtx->cfg_ini->enable_sap_auth_offload)
                        hdd_force_scc_restart_sap(pHostapdAdapter,
                              pHddCtx, (int)pRoamInfo->pBssDesc->channelId);
+#endif
                 }
 
              }
@@ -4464,7 +4468,8 @@ eHalStatus hdd_smeRoamCallback( void *pContext, tCsrRoamInfo *pRoamInfo, tANI_U3
                          (pHostapdAdapter->sessionCtx.ap.operatingChannel !=
                           pRoamInfo->chan_info.chan_id))
                  {
-                     schedule_delayed_work(&pHddCtx->ecsa_chan_change_work, 0);
+                     queue_delayed_work(system_freezable_power_efficient_wq,
+                                         &pHddCtx->ecsa_chan_change_work, 0);
                  }
                  else
                      hddLog(LOG1, FL("SAP restart not required"));

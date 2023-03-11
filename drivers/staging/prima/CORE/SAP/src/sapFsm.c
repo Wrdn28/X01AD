@@ -672,13 +672,6 @@ sapGotoDisconnecting
     return VOS_STATUS_SUCCESS;
 }
 
-static eHalStatus sapRoamSessionCloseCallback(void *pContext)
-{
-    ptSapContext sapContext = (ptSapContext)pContext;
-    return sapSignalHDDevent(sapContext, NULL,
-                    eSAP_STOP_BSS_EVENT, (v_PVOID_t) eSAP_STATUS_SUCCESS);
-}
-
 /*==========================================================================
   FUNCTION    sapGotoDisconnected
 
@@ -1533,6 +1526,8 @@ sapconvertToCsrProfile(tsap_Config_t *pconfig_params, eCsrRoamBssType bssType, t
     profile->MFPCapable = pconfig_params->mfpCapable ? 1 : 0;
     profile->MFPRequired = pconfig_params->mfpRequired ? 1 : 0;
 #endif
+
+    profile->require_h2e = pconfig_params->require_h2e;
 
     return eSAP_STATUS_SUCCESS; /* Success.  */
 }

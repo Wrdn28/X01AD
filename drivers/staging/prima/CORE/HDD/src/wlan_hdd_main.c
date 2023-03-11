@@ -1,5 +1,6 @@
 /*
  * Copyright (c) 2012-2020 The Linux Foundation. All rights reserved.
+ * Copyright (c) 2021 Qualcomm Innovation Center, Inc. All rights reserved.
  *
  * Previously licensed under the ISC license by Qualcomm Atheros, Inc.
  *
@@ -122,6 +123,9 @@ int wlan_hdd_ftm_start(hdd_context_t *pAdapter);
 #include "wlan_hdd_debugfs.h"
 #include "sapInternal.h"
 #include "wlan_hdd_request_manager.h"
+#ifdef WLAN_FEATURE_PACKET_FILTERING
+#include "wlan_hdd_packet_filtering.h"
+#endif
 
 #ifdef MODULE
 #define WLAN_MODULE_NAME  module_name(THIS_MODULE)
@@ -213,6 +217,11 @@ static VOS_STATUS hdd_parse_ese_beacon_req(tANI_U8 *pValue,
 
 //wait time for beacon miss rate.
 #define BCN_MISS_RATE_TIME 500
+
+#ifdef WLAN_FEATURE_PACKET_FILTERING
+static VOS_STATUS hdd_parse_pktfilter_params(tANI_U8 *pValue,
+                                     tPacketFilterCfg *pRequest);
+#endif
 
 /*
  * Android DRIVER command structures
@@ -1363,7 +1372,7 @@ hdd_extract_assigned_int_from_str
 
     while ((SPACE_ASCII_VALUE  == *pInPtr) && ('\0' !=  *pInPtr)) pInPtr++;
 
-    val = sscanf(pInPtr, "%32s ", buf);
+    val = sscanf(pInPtr, "%32s ", sizeof(buf));
     if (val < 0 && val > strlen(pInPtr))
     {
         return NULL;
@@ -7164,7 +7173,7 @@ free_bcn_miss_rate_req:
                {
                    case FW_UBSP_STATS:
                    {
-                       tSirUbspFwStats *stats =
+                       tSirUbspFwStats __maybe_unused *stats =
                                &fwStatsRsp->fwStatsData.ubspStats;
                        memcpy(fwStatsRsp, fw_stats_result,
                               sizeof(tSirFwStatsResult));
@@ -7302,6 +7311,45 @@ free_bcn_miss_rate_req:
             VOS_TRACE(VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_INFO,
                       FL("data:%s"), extra);
        }
+#ifdef WLAN_FEATURE_PACKET_FILTERING
+       else if (strncmp(command, "setPktFilter", 12) == 0)
+       {
+           tANI_U8 *value = command;
+           tPacketFilterCfg *pRequest = NULL;
+           eHalStatus status = eHAL_STATUS_SUCCESS;
+
+           VOS_TRACE(VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_INFO,
+                " Received Command to set / reset pkt filter %s: ", __func__);
+
+           pRequest = (tPacketFilterCfg *) kmalloc(sizeof(tPacketFilterCfg), GFP_KERNEL);
+
+           if (pRequest == NULL) {
+               ret = -EINVAL;
+               goto exit;
+           }
+
+           memset(pRequest, 0x00, sizeof(tPacketFilterCfg));
+           status = hdd_parse_pktfilter_params(value, pRequest);
+           if (eHAL_STATUS_SUCCESS != status)
+           {
+               VOS_TRACE( VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_ERROR,
+                  "%s: Failed to parse pkt Filterreq", __func__);
+               ret = -EINVAL;
+               kfree(pRequest);
+               goto exit;
+           }
+           status = wlan_hdd_set_filter(pAdapter, pRequest);
+           if (eHAL_STATUS_SUCCESS != status)
+           {
+               VOS_TRACE( VOS_MODULE_ID_HDD, VOS_TRACE_LEVEL_ERROR,
+                  "%s: Failed to set DRIVER command", __func__);
+               ret = -EINVAL;
+               kfree(pRequest);
+               goto exit;
+           }
+           kfree(pRequest);
+       }
+#endif
        else {
            MTRACE(vos_trace(VOS_MODULE_ID_HDD,
                             TRACE_CODE_HDD_UNSUPPORTED_IOCTL,
@@ -7438,6 +7486,111 @@ int hdd_mon_ioctl(struct net_device *dev, struct ifreq *ifr, int cmd)
 {
   return 0;
 }
+
+static tANI_U8* remove_firstoccurence_of_spaces(tANI_U8 *inPtr)
+{
+    tANI_U8 *tPtr = NULL;
+
+    tPtr = strnchr(inPtr, strlen(inPtr), SPACE_ASCII_VALUE);
+    /*no argument after the command or argument is NULL*/
+    if (NULL == tPtr)
+    {
+        return inPtr;
+    }
+    /*no space after the command*/
+    else if (SPACE_ASCII_VALUE != *tPtr)
+    {
+        return NULL;
+    }
+
+    /*removing empty spaces*/
+    while ((SPACE_ASCII_VALUE  == *tPtr) && ('\0' !=  *tPtr)) tPtr++;
+
+    /*no argument followed by spaces*/
+    if ('\0' == *tPtr) return tPtr;
+
+    return tPtr;
+}
+
+#ifdef WLAN_FEATURE_PACKET_FILTERING
+/**---------------------------------------------------------------------------
+
+  brief hdd_parse_pktfilter_params() - Parse packet filter request
+
+  This function parse the packet filtere parameters in the format
+  setPktFilter<space><filterAction><space><filterId><space>numParams>
+  <space><sub-filters1>....<sub-filter Params>
+  <sub-filter> format: <protocolLayer><space><cmpFlag><space><dataOffset>
+                       <space><datalength><space><compareData><space><dataMask>
+  For example, setPkFilter 1 8 3 2 1 1 1 30 2 44 0 40.
+
+  \param  - pValue Pointer to data
+  \param  - pRequest output pointer to store parsed parameters
+
+  \return - 0 for success non-zero for failure
+
+  --------------------------------------------------------------------------*/
+static VOS_STATUS hdd_parse_pktfilter_params(tANI_U8 *pValue,
+                                     tPacketFilterCfg *pRequest)
+{
+    tANI_U8 *inPtr = pValue;
+    int j = 0, i = 0;
+    int v = 0;
+
+    if ((inPtr = remove_firstoccurence_of_spaces(inPtr)) == NULL) return -EINVAL;
+
+    /*getting the first three value i.e. fiter action, id and numparams*/
+    v = sscanf(inPtr, "%hhu %hhu %hhu",&pRequest->filterAction, &pRequest->filterId,
+                                 &pRequest->numParams);
+    if (3 != v) return -EINVAL;
+
+    if (pRequest->numParams > 5) return -EINVAL;
+
+    for(i = 0; i < 3 ; i++) {
+        if ((inPtr = remove_firstoccurence_of_spaces(inPtr)) == NULL) return -EINVAL;
+    }
+
+    for (j = 0; j < pRequest->numParams; j++)
+    {
+        /*getting the sub filter parameters based on numparams*/
+        v = sscanf(inPtr, "%hhu %hhu %hhu %hhu",&pRequest->paramsData[j].protocolLayer,
+                          &pRequest->paramsData[j].cmpFlag, &pRequest->paramsData[j].dataOffset,
+                          &pRequest->paramsData[j].dataLength);
+
+        if (4 != v) return -EINVAL;
+
+        for(i = 0; i < 4 ; i++) {
+            if ((inPtr = remove_firstoccurence_of_spaces(inPtr)) == NULL) return -EINVAL;
+        }
+
+        v = sscanf(inPtr, "%hhu %hhu %hhu %hhu %hhu %hhu %hhu %hhu",
+                          &pRequest->paramsData[j].compareData[0], &pRequest->paramsData[j].compareData[1],
+                          &pRequest->paramsData[j].compareData[2], &pRequest->paramsData[j].compareData[3],
+                          &pRequest->paramsData[j].compareData[4], &pRequest->paramsData[j].compareData[5],
+                          &pRequest->paramsData[j].compareData[6], &pRequest->paramsData[j].compareData[7]);
+        if (8 != v) return -EINVAL;
+
+        for(i = 0; i < 8 ; i++) {
+            if ((inPtr = remove_firstoccurence_of_spaces(inPtr)) == NULL) return -EINVAL;
+        }
+
+        v = sscanf(inPtr, "%hhu %hhu %hhu %hhu %hhu %hhu %hhu %hhu",
+                          &pRequest->paramsData[j].dataMask[0], &pRequest->paramsData[j].dataMask[1],
+                          &pRequest->paramsData[j].dataMask[2], &pRequest->paramsData[j].dataMask[3],
+                          &pRequest->paramsData[j].dataMask[4], &pRequest->paramsData[j].dataMask[5],
+                          &pRequest->paramsData[j].dataMask[6], &pRequest->paramsData[j].dataMask[7]);
+
+        if (8 != v) return -EINVAL;
+
+        for(i = 0; i < 8 ; i++) {
+            if ((inPtr = remove_firstoccurence_of_spaces(inPtr)) == NULL) return -EINVAL;
+        }
+
+    }
+
+    return VOS_STATUS_SUCCESS;
+}
+#endif
 
 #if defined(FEATURE_WLAN_ESE) && defined(FEATURE_WLAN_ESE_UPLOAD)
 /**---------------------------------------------------------------------------
@@ -8547,13 +8700,6 @@ int __hdd_stop (struct net_device *dev)
 
    pAdapter->dev->wireless_handlers = NULL;
 
-   /*
-    * Upon wifi turn off, DUT has to flush the scan results so if
-    * this is the last cli iface, flush the scan database.
-    */
-   if (!hdd_is_cli_iface_up(pHddCtx))
-       sme_ScanFlushResult(pHddCtx->hHal, 0);
-
    EXIT();
    return 0;
 }
@@ -8634,7 +8780,6 @@ static void __hdd_uninit (struct net_device *dev)
       /* after uninit our adapter structure will no longer be valid */
       pAdapter->dev = NULL;
       pAdapter->magic = 0;
-      pAdapter->pHddCtx = NULL;
    } while (0);
 
    EXIT();
@@ -8797,7 +8942,10 @@ void hdd_full_pwr_cbk(void *callbackContext, eHalStatus status)
    hdd_context_t *pHddCtx = (hdd_context_t*)callbackContext;
 
    hddLog(VOS_TRACE_LEVEL_INFO_HIGH,"HDD full Power callback status = %d", status);
-   complete(&pHddCtx->full_pwr_comp_var);
+   if(&pHddCtx->full_pwr_comp_var != NULL)
+   {
+      complete(&pHddCtx->full_pwr_comp_var);
+   }
 }
 
 #ifdef WLAN_FEATURE_RMC
@@ -8947,7 +9095,7 @@ done:
    return ret;
 }
 
-static int hdd_open_cesium_nl_sock()
+static int hdd_open_cesium_nl_sock(void)
 {
 #if (LINUX_VERSION_CODE >= KERNEL_VERSION(3,6,0))
    struct netlink_kernel_cfg cfg = {
@@ -8978,7 +9126,7 @@ static int hdd_open_cesium_nl_sock()
    return ret;
 }
 
-static void hdd_close_cesium_nl_sock()
+static void hdd_close_cesium_nl_sock(void)
 {
    if (NULL != cesium_nl_srv_sock)
    {
@@ -11093,8 +11241,10 @@ static void __hdd_sap_restart_handle(struct work_struct *work)
         wlan_hdd_restart_sap(sap_adapter);
         hdd_change_ch_avoidance_status(hdd_ctx, false);
     }
+#ifdef SAP_AUTH_OFFLOAD
     if (hdd_ctx->cfg_ini->enable_sap_auth_offload)
         wlan_hdd_restart_sap(sap_adapter);
+#endif
 }
 
 /**
@@ -12851,9 +13001,9 @@ void hdd_wlan_exit(hdd_context_t *pHddCtx)
    send_btc_nlink_msg(WLAN_MODULE_DOWN_IND, 0);
 
    hdd_close_tx_queues(pHddCtx);
+#ifdef WLAN_LOGGING_SOCK_SVC_ENABLE
    wlan_free_fwr_mem_dump_buffer();
 
-#ifdef WLAN_LOGGING_SOCK_SVC_ENABLE
    if (pHddCtx->cfg_ini->wlanLoggingEnable)
    {
        wlan_logging_sock_deactivate_svc();
@@ -13625,6 +13775,7 @@ void hdd_init_frame_logging_done(void *fwlogInitCbContext, tAniLoggingInitRsp *p
       return;
    }
 
+#ifdef WLAN_LOGGING_SOCK_SVC_ENABLE
    /*Check feature supported by FW*/
    if(TRUE == sme_IsFeatureSupportedByFW(MEMORY_DUMP_SUPPORTED))
    {
@@ -13635,6 +13786,7 @@ void hdd_init_frame_logging_done(void *fwlogInitCbContext, tAniLoggingInitRsp *p
    {
       wlan_store_fwr_mem_dump_size(0);
    }
+#endif
 
 
 }
@@ -13820,7 +13972,8 @@ void wlan_hdd_defer_scan_init_work(hdd_context_t *pHddCtx,
         pHddCtx->scan_ctxt.attempt = 0;
         pHddCtx->scan_ctxt.magic = TDLS_CTX_MAGIC;
     }
-    schedule_delayed_work(&pHddCtx->scan_ctxt.scan_work, delay);
+    queue_delayed_work(system_freezable_power_efficient_wq,
+                          &pHddCtx->scan_ctxt.scan_work, delay);
 }
 
 void wlan_hdd_init_deinit_defer_scan_context(scan_context_t *scan_ctx)
@@ -14275,6 +14428,22 @@ int hdd_wlan_startup(struct device *dev )
    {
       eHalStatus halStatus;
 
+      /* Overwrite the Mac address if config file exist */
+      if (VOS_STATUS_SUCCESS != hdd_update_mac_config(pHddCtx))
+      {
+         hddLog(VOS_TRACE_LEVEL_WARN,
+                "%s: Didn't overwrite MAC from config file",
+                __func__);
+      } else {
+         pr_info("%s: WLAN Mac Addr from config: %02X:%02X:%02X:%02X:%02X:%02X\n", WLAN_MODULE_NAME,
+                 pHddCtx->cfg_ini->intfMacAddr[0].bytes[0],
+                 pHddCtx->cfg_ini->intfMacAddr[0].bytes[1],
+                 pHddCtx->cfg_ini->intfMacAddr[0].bytes[2],
+                 pHddCtx->cfg_ini->intfMacAddr[0].bytes[3],
+                 pHddCtx->cfg_ini->intfMacAddr[0].bytes[4],
+                 pHddCtx->cfg_ini->intfMacAddr[0].bytes[5]);
+      }
+
       /* Set the MAC Address Currently this is used by HAL to
        * add self sta. Remove this once self sta is added as
        * part of session open.
@@ -14654,10 +14823,9 @@ int hdd_wlan_startup(struct device *dev )
        hddLog(VOS_TRACE_LEVEL_INFO, FL("Logging disabled in ini"));
    }
 
-#endif
-
    if (vos_is_multicast_logging())
        wlan_logging_set_log_level();
+#endif
 
    hdd_register_mcast_bcast_filter(pHddCtx);
 
@@ -14786,8 +14954,8 @@ int hdd_wlan_startup(struct device *dev )
    wcnss_update_bt_profile();
    goto success;
 
-err_open_cesium_nl_sock:
 #ifdef WLAN_LOGGING_SOCK_SVC_ENABLE
+err_open_cesium_nl_sock:
    hdd_close_cesium_nl_sock();
 #endif
 
@@ -15518,11 +15686,11 @@ wlan_hdd_is_GO_power_collapse_allowed (hdd_context_t* pHddCtx)
                  FL("GO started"));
           return TRUE;
      }
-     else
-          /* wait till GO changes its interface to p2p device */
-          hddLog(VOS_TRACE_LEVEL_INFO,
-                 FL("Del_bss called, avoid apps suspend"));
-          return FALSE;
+
+     /* wait till GO changes its interface to p2p device */
+     hddLog(VOS_TRACE_LEVEL_INFO,
+            FL("Del_bss called, avoid apps suspend"));
+     return FALSE;
 
 }
 /* Decide whether to allow/not the apps power collapse. 
@@ -16163,6 +16331,7 @@ VOS_STATUS hdd_issta_p2p_clientconnected(hdd_context_t *pHddCtx)
 }
 
 
+#ifdef WLAN_LOGGING_SOCK_SVC_ENABLE
 /*
  * API to find if the firmware will send logs using DXE channel
  */
@@ -16173,8 +16342,7 @@ v_U8_t hdd_is_fw_logging_enabled(void)
     pHddCtx = vos_get_context(VOS_MODULE_ID_HDD,
                               vos_get_global_context(VOS_MODULE_ID_HDD, NULL));
 
-    return (pHddCtx && pHddCtx->cfg_ini->wlanLoggingEnable &&
-            pHddCtx->cfg_ini->enableMgmtLogging);
+    return (pHddCtx && pHddCtx->cfg_ini->enableMgmtLogging);
 }
 
 /*
@@ -16187,9 +16355,9 @@ v_U8_t hdd_is_fw_ev_logging_enabled(void)
     pHddCtx = vos_get_context(VOS_MODULE_ID_HDD,
                               vos_get_global_context(VOS_MODULE_ID_HDD, NULL));
 
-    return (pHddCtx && pHddCtx->cfg_ini->wlanLoggingEnable &&
-            pHddCtx->cfg_ini->enableFWLogging);
+    return (pHddCtx && pHddCtx->cfg_ini->enableFWLogging);
 }
+#endif
 
 /*
  * API to find if there is any session connected
@@ -16259,12 +16427,8 @@ void hdd_indicate_mgmt_frame(tSirSmeMgmtFrameInd *frame_ind)
    hdd_context_t *hdd_ctx = NULL;
    hdd_adapter_t *adapter = NULL;
    v_CONTEXT_t vos_context = NULL;
-   tANI_U8 type = 0;
-   tANI_U8 subType = 0;
    struct ieee80211_mgmt *mgmt =
            (struct ieee80211_mgmt *)frame_ind->frameBuf;
-   tANI_U8* pbFrames;
-   tANI_U32 nFrameLength;
 
    /* Get the global VOSS context.*/
    vos_context = vos_get_global_context(VOS_MODULE_ID_SYS, NULL);
@@ -16286,38 +16450,7 @@ void hdd_indicate_mgmt_frame(tSirSmeMgmtFrameInd *frame_ind)
         return;
    }
 
-   /* Try to retrieve the adapter from the mac address list*/
-     type = WLAN_HDD_GET_TYPE_FRM_FC(pbFrames[0]);
-     subType = WLAN_HDD_GET_SUBTYPE_FRM_FC(pbFrames[0]);
-     pbFrames = frame_ind->frameBuf;
-     nFrameLength = frame_ind->frameLen;
-
-    /* Get pAdapter from Destination mac address of the frame */
-    if ((type == SIR_MAC_MGMT_FRAME) &&
-        (subType != SIR_MAC_MGMT_PROBE_REQ) &&
-        (frame_ind->frameLen > WLAN_HDD_80211_FRM_DA_OFFSET + VOS_MAC_ADDR_SIZE)
-	&&
-        !vos_is_macaddr_broadcast(
-         (v_MACADDR_t *)&pbFrames[WLAN_HDD_80211_FRM_DA_OFFSET]))
-      {
-         adapter = hdd_get_adapter_by_macaddr(hdd_ctx,
-                               &pbFrames[WLAN_HDD_80211_FRM_DA_OFFSET]);
-         if (NULL == adapter)
-         {
-             /* Under assumtion that we don't receive any action frame
-              * with BCST as destination we dropping action frame
-              */
-             hddLog(VOS_TRACE_LEVEL_FATAL,"pAdapter for action frame is NULL Macaddr = "
-                               MAC_ADDRESS_STR ,
-                               MAC_ADDR_ARRAY(&pbFrames[WLAN_HDD_80211_FRM_DA_OFFSET]));
-             hddLog(VOS_TRACE_LEVEL_FATAL, "%s: Frame Type = %d Frame Length = %d"
-                              " subType = %d",__func__,frame_ind->frameType,nFrameLength,subType);
-             return;
-         }
-       }
-
-   if (adapter == NULL)
-       adapter = hdd_get_adapter_by_sme_session_id(hdd_ctx,
+adapter = hdd_get_adapter_by_sme_session_id(hdd_ctx,
                                           frame_ind->sessionId);
 
    if ((NULL != adapter) &&

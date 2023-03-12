@@ -1632,7 +1632,7 @@ struct xfrm_policy *xfrm_policy_bysel_ctx(struct net *net,
 					  struct xfrm_selector *sel,
 					  struct xfrm_sec_ctx *ctx, int delete,
 					  int *err);
-truct xfrm_policy *xfrm_policy_byid(struct net *net,
+struct xfrm_policy *xfrm_policy_byid(struct net *net,
 				     const struct xfrm_mark *mark,
 				     u32 if_id,
 				     u8 type, int dir, u32 id, int delete,

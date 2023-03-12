@@ -3518,7 +3518,7 @@ int usb_port_resume(struct usb_device *udev, pm_message_t msg)
 		}
 
 		/* TRSMRCY = 10 msec */
-		msleep(10);
+		usleep_range(10000, 10500);
 	}
 
 	if (udev->persist_enabled)
@@ -4953,7 +4953,7 @@ retry_enum:
 		usb_unlock_port(port_dev);
 		retry_locked = false;
 
-				dev_speed = udev->speed;
+		dev_speed = udev->speed;
 		if (udev->speed > USB_SPEED_UNKNOWN &&
 				udev->speed <= USB_SPEED_HIGH && hcd->usb_phy
 				&& hcd->usb_phy->disable_chirp)

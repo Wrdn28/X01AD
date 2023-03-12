@@ -116,6 +116,19 @@ static void quota2_log(unsigned int hooknum,
 		       const struct net_device *out,
 		       const char *prefix)
 {
+	if (!prefix)
+		return;
+
+	strlcpy(q->last_prefix, prefix, QUOTA2_SYSFS_WORK_MAX_SIZE);
+
+	if (in)
+		strlcpy(q->last_iface, in->name, QUOTA2_SYSFS_WORK_MAX_SIZE);
+	else if (out)
+		strlcpy(q->last_iface, out->name, QUOTA2_SYSFS_WORK_MAX_SIZE);
+	else
+		strlcpy(q->last_iface, "UNKNOWN", QUOTA2_SYSFS_WORK_MAX_SIZE);
+
+	schedule_work(&q->work);
 }
 #endif  /* if+else CONFIG_NETFILTER_XT_MATCH_QUOTA2_LOG */
 static ssize_t quota_proc_read(struct file *file, char __user *buf,
@@ -281,11 +294,7 @@ quota_mt2(const struct sk_buff *skb, struct xt_action_param *par)
 			ret = !ret;
 		} else if (e->quota) {
 			/* We are transitioning, log that fact. */
-			quota2_log(par->hooknum,
-				   skb,
-				   par->in,
-				   par->out,
-				   q->name);
+			quota2_log(par->in, par->out, e, q->name);
 			/* we do not allow even small packets from now on */
 			e->quota = 0;
 		}
